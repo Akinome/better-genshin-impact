@@ -1,0 +1,135 @@
+name: BetterGI Release
+run-name: "BetterGI ${{ inputs.version }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'BetterGI Version (e.g. 0.67.0)'
+        required: true
+        type: string
+      create-release:
+        description: 'Create GitHub Release'
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Validate version
+        id: version
+        run: |
+          if ! [[ "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "Invalid version format: ${{ inputs.version }}"
+            exit 1
+          fi
+          echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+
+  build_web_map_editor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: huiyadanli/bettergi-map
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm install
+      - run: npm run build:single
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web_map_editor
+          path: dist/
+
+  build_web_scripts_list:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: zaodonganqi/bettergi-script-web
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm install
+      - run: npm run build:single
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web_scripts_list
+          path: dist/
+
+  build_dist:
+    runs-on: windows-latest
+    needs: [validate, build_web_map_editor, build_web_scripts_list]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.x
+
+      - name: Set version
+        shell: pwsh
+        run: |
+          $version = '${{ needs.validate.outputs.version }}'
+          (Get-Content BetterGenshinImpact/BetterGenshinImpact.csproj) -replace '<Version>.*</Version>', "<Version>$version</Version>" | Set-Content BetterGenshinImpact/BetterGenshinImpact.csproj
+
+      - name: Build application
+        shell: pwsh
+        run: dotnet publish BetterGenshinImpact/BetterGenshinImpact.csproj -c Release -p:PublishProfile=FolderProfile -p:Version=${{ needs.validate.outputs.version }}
+
+      - name: Clean and move files
+        shell: pwsh
+        run: |
+          $sourceDir = ".\BetterGenshinImpact\bin\x64\Release\net8.0-windows10.0.22621.0\publish\win-x64"
+          Get-ChildItem -Path $sourceDir -Recurse -Filter "*.lib" | Remove-Item -Force
+          Get-ChildItem -Path $sourceDir -Recurse -Filter "*ffmpeg*.dll" | Remove-Item -Force
+          Get-ChildItem -Path $sourceDir -Recurse -Filter "*.pdb" | Remove-Item -Force
+          New-Item -Path "dist/BetterGI" -ItemType Directory -Force
+          Copy-Item -Path "$sourceDir\*" -Destination ".\dist\BetterGI\" -Recurse -Force
+
+      - name: Download web map editor
+        uses: actions/download-artifact@v4
+        with:
+          name: web_map_editor
+          path: dist/BetterGI/Assets/Map/Editor
+
+      - name: Download web script repo
+        uses: actions/download-artifact@v4
+        with:
+          name: web_scripts_list
+          path: dist/BetterGI/Assets/Web/ScriptRepo
+
+      - name: Create archive
+        shell: pwsh
+        run: |
+          7z a "BetterGI_v${{ needs.validate.outputs.version }}.7z" ".\BetterGI" -t7z -mx=5 -r -y
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BetterGI_7z
+          path: BetterGI_v*.7z
+
+  create_release:
+    if: inputs.create-release == true
+    needs: [validate, build_dist]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: BetterGI_7z
+          path: artifacts
+
+      - uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.validate.outputs.version }}
+          name: BetterGI ${{ needs.validate.outputs.version }}
+          prerelease: ${{ contains(needs.validate.outputs.version, '-') }}
+          fail_on_unmatched_files: true
+          files: artifacts/BetterGI_*.7z
