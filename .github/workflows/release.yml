@@ -130,6 +130,12 @@ jobs:
         with:
           tag_name: ${{ needs.validate.outputs.version }}
           name: BetterGI ${{ needs.validate.outputs.version }}
+          body: |
+            ### Build info
+            - Branch: `${{ github.ref_name }}`
+            - Commit: [`${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
+            - Workflow run: [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
           prerelease: ${{ contains(needs.validate.outputs.version, '-') }}
+          generate_release_notes: true
           fail_on_unmatched_files: true
           files: artifacts/BetterGI_*.7z
