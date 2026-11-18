@@ -8,18 +8,6 @@ on:
         description: 'BetterGI Version (e.g. 0.67.0)'
         required: true
         type: string
-      release-notes:
-        description: 'Release notes in Markdown, placed before the generated change list'
-        required: false
-        type: string
-        default: |
-          优化凯瑟琳对话中的每日委托与探索派遣处理。
-
-          ### 自动剧情
-
-          - 同帧处理「每日委托」与「探索派遣」选项，减少重复对话。
-          - 支持历练点确认框，优化全部领取、再次派遣与退出页面的检测时序。
-          - 同步上游最新功能与修复。
       create-release:
         description: 'Create GitHub Release'
         required: true
@@ -238,6 +226,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
       - uses: actions/download-artifact@v4
         with:
           name: BetterGI_7z
@@ -253,16 +245,7 @@ jobs:
           tag_name: ${{ needs.validate.outputs.version }}
           target_commitish: ${{ github.sha }}
           name: BetterGI ${{ needs.validate.outputs.version }}
-          body: |
-            ${{ inputs.release-notes }}
-
-            <details>
-            <summary>构建信息</summary>
-
-            - 分支：`${{ github.ref_name }}`
-            - 提交：[`${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
-            - 构建记录：[#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
-            </details>
+          body_path: .github/release-notes.md
           prerelease: ${{ contains(needs.validate.outputs.version, '-') }}
           generate_release_notes: true
           fail_on_unmatched_files: true
