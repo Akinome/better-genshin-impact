@@ -121,14 +121,124 @@ jobs:
         run: |
           7z a "BetterGI_v${{ needs.validate.outputs.version }}.7z" ".\dist\BetterGI" -t7z -mx=5 -r -y
 
+      - name: Verify bundled web assets
+        shell: pwsh
+        run: |
+          $entries = 7z l "BetterGI_v${{ needs.validate.outputs.version }}.7z" | Out-String
+          if ($entries -notmatch 'Assets[\\/]Map[\\/]Editor') {
+            throw 'The archive does not contain Assets/Map/Editor.'
+          }
+          if ($entries -notmatch 'Assets[\\/]Web[\\/]ScriptRepo') {
+            throw 'The archive does not contain Assets/Web/ScriptRepo.'
+          }
+
       - uses: actions/upload-artifact@v4
         with:
           name: BetterGI_7z
           path: BetterGI_v*.7z
 
+  build_installer:
+    runs-on: windows-latest
+    needs: [validate, build_dist]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: BetterGI_7z
+          path: dist
+
+      - name: Unpack BetterGI archive
+        shell: pwsh
+        run: |
+          Set-Location dist
+          7z x "BetterGI_v${{ needs.validate.outputs.version }}.7z"
+
+      - name: Download kachina-builder
+        uses: robinraju/release-downloader@v1.8
+        with:
+          repository: YuehaiTeam/kachina-installer
+          latest: true
+          fileName: kachina-builder.exe
+
+      - name: Download latest upstream release
+        uses: robinraju/release-downloader@v1.8
+        with:
+          repository: babalae/better-genshin-impact
+          latest: true
+          fileName: BetterGI_v*.7z
+          out-file-path: last
+
+      - name: Get second and third upstream release tags
+        id: release_tags
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $headers = @{
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            Accept = 'application/vnd.github.v3+json'
+          }
+          $releases = Invoke-RestMethod -Uri 'https://api.github.com/repos/babalae/better-genshin-impact/releases' -Headers $headers
+          $validReleases = $releases |
+            Where-Object { -not $_.draft -and -not $_.prerelease } |
+            Sort-Object { [DateTime]$_.published_at } -Descending
+          if ($validReleases.Count -lt 3) {
+            throw "At least three upstream releases are required; found $($validReleases.Count)."
+          }
+          "second_release_tag=$($validReleases[1].tag_name)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "third_release_tag=$($validReleases[2].tag_name)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Download second upstream release
+        uses: robinraju/release-downloader@v1.8
+        with:
+          repository: babalae/better-genshin-impact
+          tag: ${{ steps.release_tags.outputs.second_release_tag }}
+          fileName: BetterGI_v*.7z
+          out-file-path: 2nd
+
+      - name: Download third upstream release
+        uses: robinraju/release-downloader@v1.8
+        with:
+          repository: babalae/better-genshin-impact
+          tag: ${{ steps.release_tags.outputs.third_release_tag }}
+          fileName: BetterGI_v*.7z
+          out-file-path: 3rd
+
+      - name: Unpack upstream releases
+        shell: pwsh
+        run: |
+          foreach ($directory in 'last', '2nd', '3rd') {
+            Set-Location $directory
+            7z x 'BetterGI*.7z' -otemp
+            if (Test-Path -Path '.\temp\BetterGI' -PathType Container) {
+              Move-Item -Path '.\temp\BetterGI' -Destination '.\BetterGI'
+            } else {
+              Rename-Item -Path '.\temp' -NewName 'BetterGI'
+            }
+            Set-Location ..
+          }
+
+      - name: Build installer and online updater
+        shell: pwsh
+        run: |
+          Set-Location dist
+          ..\kachina-builder.exe gen -j 6 -i BetterGI -m metadata.json -o hashed -r babalae/bettergi -t ${{ needs.validate.outputs.version }} --diff-vers ..\last\BetterGI --diff-vers ..\2nd\BetterGI --diff-vers ..\3rd\BetterGI --diff-ignore *[.txt,.onnx] -u .\BetterGI\BetterGI.update.exe
+          ..\kachina-builder.exe pack -c ../Build/kachina.config.json -m metadata.json -d hashed -o BetterGI.Install.${{ needs.validate.outputs.version }}.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BetterGI_Install
+          path: dist/BetterGI.Install.*.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BetterGI_OnlineInst
+          path: dist/BetterGI/BetterGI.update.exe
+
   create_release:
     if: inputs.create-release == true
-    needs: [validate, build_dist]
+    needs: [validate, build_dist, build_installer]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -136,7 +246,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: BetterGI_7z
-          path: artifacts
+          path: artifacts/BetterGI_7z
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: BetterGI_Install
+          path: artifacts/BetterGI_Install
 
       - uses: softprops/action-gh-release@v1
         with:
@@ -155,4 +270,6 @@ jobs:
           prerelease: ${{ contains(needs.validate.outputs.version, '-') }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-          files: artifacts/BetterGI_*.7z
+          files: |
+            artifacts/BetterGI_7z/*.7z
+            artifacts/BetterGI_Install/*.exe
